@@ -1,0 +1,1 @@
+DANGEROUSLY_OMIT_AUTH=true uv run mcp dev server.py
