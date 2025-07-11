@@ -136,7 +136,7 @@ def get_jira_ticket_details(ticket_key: str) -> Dict[str, Any]:
         ticket_key: The key of the JIRA ticket (e.g., 'SUP-3591')
         
     Returns:
-        Detailed information about the ticket including description and comments
+        Detailed information about the ticket including description and comments in a readable format
     """
     base_url = os.getenv("JIRA_BASE_URL", "https://wovnio.atlassian.net")
     
@@ -168,104 +168,57 @@ def get_jira_ticket_details(ticket_key: str) -> Dict[str, Any]:
         # Log comments data
         pretty_print_to_file(comments_data, f"jira_ticket_{ticket_key}_comments.json")
         
-        # Build a comprehensive response with all the details
-        ticket_details = {
-            "id": issue_data.get("id"),
-            "key": issue_data.get("key"),
-            "summary": issue_data.get("fields", {}).get("summary"),
-            "description_raw": issue_data.get("fields", {}).get("description"),  # Raw description with its full structure
-            "description_text": get_description_text(issue_data.get("fields", {}).get("description")),  # Extracted text
-            "rendered_description": issue_data.get("renderedFields", {}).get("description"),  # HTML rendered version
-            "status": issue_data.get("fields", {}).get("status", {}).get("name"),
-            "type": issue_data.get("fields", {}).get("issuetype", {}).get("name"),
-            "priority": issue_data.get("fields", {}).get("priority", {}).get("name") if issue_data.get("fields", {}).get("priority") else None,
-            "assignee": issue_data.get("fields", {}).get("assignee", {}).get("displayName") if issue_data.get("fields", {}).get("assignee") else "Unassigned",
-            "reporter": issue_data.get("fields", {}).get("reporter", {}).get("displayName") if issue_data.get("fields", {}).get("reporter") else None,
-            "created": issue_data.get("fields", {}).get("created"),
-            "updated": issue_data.get("fields", {}).get("updated"),
-            "labels": issue_data.get("fields", {}).get("labels", []),
-            "components": [comp.get("name") for comp in issue_data.get("fields", {}).get("components", [])],
-            "comments": [],
-            # Include the raw data
-            "raw_data": {
-                "issue": issue_data,
-                "comments": comments_data
-            }
+        # Extract field names mapping
+        field_names = issue_data.get("names", {})
+        
+        # Get rendered fields (human-readable HTML content)
+        rendered_fields = issue_data.get("renderedFields", {})
+        
+        # Format comments in a readable way
+        formatted_comments = []
+        for comment in comments_data.get("comments", []):
+            comment_body = comment.get("body", "")
+            author = comment.get("author", {}).get("displayName", "Unknown")
+            created = comment.get("created", "")
+            
+            formatted_comment = (
+                f"Comment by {author} on {created}:\n"
+                f"{comment_body}"
+            )
+            formatted_comments.append(formatted_comment)
+        
+        # Create a formatted ticket representation with main fields and custom fields
+        formatted_custom_fields = []
+        for field_id, field_name in field_names.items():
+            # Only include fields that have rendered content and are custom fields
+            if field_id.startswith("customfield_") and field_id in rendered_fields and rendered_fields.get(field_id):
+                formatted_custom_fields.append(
+                    f"## {field_name}\n{rendered_fields.get(field_id)}"
+                )
+        
+        # Combine all information into a well-structured format
+        ticket_formatted = {
+            "ticket_key": issue_data.get("key"),
+            "ticket_info": (
+                f"# {issue_data.get('key')} - {issue_data.get('fields', {}).get('summary')}\n\n"
+                f"**Type:** {issue_data.get('fields', {}).get('issuetype', {}).get('name')}\n"
+                f"**Status:** {issue_data.get('fields', {}).get('status', {}).get('name')}\n"
+                f"**Priority:** {issue_data.get('fields', {}).get('priority', {}).get('name') if issue_data.get('fields', {}).get('priority') else 'None'}\n"
+                f"**Assignee:** {issue_data.get('fields', {}).get('assignee', {}).get('displayName') if issue_data.get('fields', {}).get('assignee') else 'Unassigned'}\n"
+                f"**Reporter:** {issue_data.get('fields', {}).get('reporter', {}).get('displayName') if issue_data.get('fields', {}).get('reporter') else 'None'}\n"
+                f"**Created:** {issue_data.get('fields', {}).get('created')}\n"
+                f"**Updated:** {issue_data.get('fields', {}).get('updated')}\n\n"
+                f"## Description\n{rendered_fields.get('description') or 'No description provided.'}\n\n"
+                + ("\n\n".join(formatted_custom_fields) if formatted_custom_fields else "") + "\n\n"
+                f"## Comments\n" + ("\n\n".join(formatted_comments) if formatted_comments else "No comments.")
+            )
         }
         
-        # Add comments to the response
-        for comment in comments_data.get("comments", []):
-            ticket_details["comments"].append({
-                "id": comment.get("id"),
-                "author": comment.get("author", {}).get("displayName"),
-                "body": comment.get("body"),
-                "created": comment.get("created"),
-                "updated": comment.get("updated")
-            })
-        
-        return ticket_details
+        return ticket_formatted
     
     except requests.exceptions.RequestException as e:
         return {"error": f"Failed to fetch JIRA ticket details: {str(e)}"}
 
-
-# Add a tool to get all available fields for a JIRA ticket
-@mcp.tool()
-def get_jira_ticket_all_fields(ticket_key: str) -> Dict[str, Any]:
-    """
-    Get all fields (including custom fields) for a specific JIRA ticket
-    
-    Args:
-        ticket_key: The key of the JIRA ticket (e.g., 'SUP-3591')
-        
-    Returns:
-        All fields available for the ticket, including custom fields
-    """
-    base_url = os.getenv("JIRA_BASE_URL", "https://wovnio.atlassian.net")
-    
-    # Endpoint to get issue details
-    url = f"{base_url}/rest/api/3/issue/{ticket_key}"
-    
-    # Parameters to expand additional information
-    params = {
-        "expand": "names,schema,editmeta"
-    }
-    
-    try:
-        # Get the ticket with all fields
-        response = requests.get(url, headers=get_jira_headers(), params=params)
-        response.raise_for_status()
-        
-        issue_data = response.json()
-        
-        # Create a dictionary of field info
-        result = {
-            "key": issue_data.get("key"),
-            "all_fields": {},
-            "field_names": issue_data.get("names", {}),  # Map of field IDs to human-readable names
-            "field_schemas": issue_data.get("schema", {}),  # Information about field types and formats
-            "raw_data": issue_data  # Include the complete raw data
-        }
-        
-        # Include all fields from the ticket
-        if "fields" in issue_data:
-            result["all_fields"] = issue_data["fields"]
-        
-        # Add special section for custom fields
-        result["custom_fields"] = {}
-        for field_id, field_value in issue_data.get("fields", {}).items():
-            if field_id.startswith("customfield_"):
-                field_name = issue_data.get("names", {}).get(field_id, field_id)
-                result["custom_fields"][field_id] = {
-                    "name": field_name,
-                    "value": field_value,
-                    "schema": issue_data.get("schema", {}).get(field_id, {})
-                }
-        
-        return result
-    
-    except requests.exceptions.RequestException as e:
-        return {"error": f"Failed to fetch JIRA ticket fields: {str(e)}"}
 
 # Helper function to pretty print data to a file for debugging
 def pretty_print_to_file(data, filename="jira_data_log.json"):
